@@ -1,6 +1,8 @@
-use std::fmt::Display;
+use rand::seq::IteratorRandom;
 use rand::SeedableRng;
-use rand::{rngs::StdRng, Rng};
+use rand::{Rng, rngs::StdRng};
+use strum::{EnumIter, IntoEnumIterator};
+use std::fmt::Display;
 
 use godot::prelude::*;
 
@@ -14,7 +16,7 @@ use godot::classes::MeshInstance3D;
 #[derive(GodotClass)]
 #[class(base=MeshInstance3D)]
 struct Mesh3DRandomShader {
-    base: Base<MeshInstance3D>
+    base: Base<MeshInstance3D>,
 }
 
 use godot::classes::IMeshInstance3D;
@@ -23,10 +25,8 @@ use godot::classes::IMeshInstance3D;
 impl IMeshInstance3D for Mesh3DRandomShader {
     fn init(base: Base<MeshInstance3D>) -> Self {
         godot_print!("Hello, world!"); // Prints to the Godot console
-        
-        Self {
-            base,
-        }
+
+        Self { base }
     }
 }
 
@@ -34,14 +34,14 @@ impl IMeshInstance3D for Mesh3DRandomShader {
 impl Mesh3DRandomShader {
     #[func]
     fn new_shader_code(seed: u64, depth: u32) -> String {
-
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         let r_tree = generate_tree(depth, &mut rng);
         let g_tree = generate_tree(depth, &mut rng);
         let b_tree = generate_tree(depth, &mut rng);
-        
-        format!("
+
+        format!(
+            "
         shader_type spatial;
 		render_mode unshaded;
 
@@ -53,20 +53,19 @@ impl Mesh3DRandomShader {
 		{{
 			ALBEDO = vec3({}, {}, {});
 		}}
-        ", r_tree, g_tree, b_tree
-            )
+        ",
+            r_tree, g_tree, b_tree
+        )
     }
-
 }
 
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NodeBinop {
     lhs: Box<NodeKind>,
     rhs: Box<NodeKind>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NodeUnop {
     value: Box<NodeKind>,
 }
@@ -77,10 +76,25 @@ enum NodeState {
 }
 
 #[derive(Debug, Clone)]
-pub enum NodeKind {
+enum NodeKind {
+    NodeTerminal(NodeTerminal),
+    NodeNonTerminal(NodeNonTerminal),
+}
+
+impl Default for NodeKind {
+    fn default() -> Self { NodeKind::NodeTerminal(NodeTerminal::X) }
+}
+
+#[derive(Debug, EnumIter, Copy, Clone)]
+enum NodeTerminal {
     X,
     Y,
     Random(f32),
+    Time,
+}
+
+#[derive(Debug, EnumIter, Clone)]
+enum NodeNonTerminal {
     Add(NodeBinop),
     Mult(NodeBinop),
     Sqrt(NodeUnop),
@@ -88,9 +102,7 @@ pub enum NodeKind {
     Sin(NodeUnop),
     Mod(NodeBinop),
     Gt(NodeBinop),
-    Time,
 }
-
 impl Display for NodeKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let string = generate_shader_code(self);
@@ -101,50 +113,54 @@ impl Display for NodeKind {
 
 fn generate_shader_code(node: &NodeKind) -> String {
     match node {
-        NodeKind::X => "UV.x * 2.0 - 1.0".to_string(),
-        NodeKind::Y => "UV.y * 2.0 - 1.0".to_string(),
-        NodeKind::Random(r) => format!("float({})", *r),
-        NodeKind::Add(node_binop) => {
+        NodeKind::NodeTerminal(nodetype) => match nodetype {
+            NodeTerminal::X => "UV.x * 2.0 - 1.0".to_string(),
+            NodeTerminal::Y => "UV.y * 2.0 - 1.0".to_string(),
+            NodeTerminal::Random(r) => format!("float({})", *r),
+            NodeTerminal::Time => "sin(TIME)".to_string(),
+            
+        }
+        NodeKind::NodeNonTerminal(nodetype) => match nodetype {
+        NodeNonTerminal::Add(node_binop) => {
             format!(
                 "({}) + ({})",
                 generate_shader_code(node_binop.lhs.as_ref()),
                 generate_shader_code(node_binop.rhs.as_ref())
             )
         }
-        NodeKind::Mult(node_binop) => {
+        NodeNonTerminal::Mult(node_binop) => {
             format!(
                 "({}) * ({})",
                 generate_shader_code(node_binop.lhs.as_ref()),
                 generate_shader_code(node_binop.rhs.as_ref())
             )
         }
-        NodeKind::Sqrt(node_unop) => {
+        NodeNonTerminal::Sqrt(node_unop) => {
             format!(
                 "sqrt(abs({}))",
                 generate_shader_code(node_unop.value.as_ref())
             )
         }
-        NodeKind::Abs(node_unop) => {
+        NodeNonTerminal::Abs(node_unop) => {
             format!("abs({})", generate_shader_code(node_unop.value.as_ref()))
         }
-        NodeKind::Sin(node_unop) => {
+        NodeNonTerminal::Sin(node_unop) => {
             format!("sin({})", generate_shader_code(node_unop.value.as_ref()))
         }
-        NodeKind::Mod(node_binop) => {
+        NodeNonTerminal::Mod(node_binop) => {
             format!(
                 "fix_fmod({}, {})",
                 generate_shader_code(node_binop.lhs.as_ref()),
                 generate_shader_code(node_binop.rhs.as_ref())
             )
         }
-        NodeKind::Gt(node_binop) => {
+        NodeNonTerminal::Gt(node_binop) => {
             format!(
                 "float(({}) > ({}))",
                 generate_shader_code(node_binop.lhs.as_ref()),
                 generate_shader_code(node_binop.rhs.as_ref())
             )
-        }
-        NodeKind::Time => format!("sin(TIME)"),
+        }}
     }
 }
 
@@ -161,40 +177,38 @@ fn generate_tree(depth: u32, rng: &mut StdRng) -> NodeKind {
     };
 
     match state {
-        NodeState::A => match rng.random_range(1..=4) {
-            1 => NodeKind::X,
-            2 => NodeKind::Y,
-            3 => NodeKind::Random(rng.random_range(-1f32..=1f32)),
-            4 => NodeKind::Time,
-            _ => unreachable!(),
+        NodeState::A => match NodeTerminal::iter().choose(rng).unwrap() {
+            NodeTerminal::X => NodeKind::NodeTerminal(NodeTerminal::X),
+            NodeTerminal::Y => NodeKind::NodeTerminal(NodeTerminal::Y),
+            NodeTerminal::Time => NodeKind::NodeTerminal(NodeTerminal::Time),
+            NodeTerminal::Random(_) => NodeKind::NodeTerminal(NodeTerminal::Random(rng.random_range(-1f32..=1f32))),
         },
-        NodeState::C => match rng.random_range(1..=7) {
-            1 => NodeKind::Add(NodeBinop {
+        NodeState::C => match NodeNonTerminal::iter().choose(rng).unwrap() {
+            NodeNonTerminal::Add(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Add(NodeBinop {
                 lhs: Box::new(generate_tree(depth - 1, rng)),
                 rhs: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            2 => NodeKind::Mult(NodeBinop {
+            })),
+            NodeNonTerminal::Mult(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Mult(NodeBinop {
                 lhs: Box::new(generate_tree(depth - 1, rng)),
                 rhs: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            3 => NodeKind::Sqrt(NodeUnop {
+            })),
+            NodeNonTerminal::Mod(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Mod(NodeBinop {
+                lhs: Box::new(generate_tree(depth - 1, rng)),
+                rhs: Box::new(generate_tree(depth - 1, rng)),
+            })),
+            NodeNonTerminal::Gt(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Gt(NodeBinop {
+                lhs: Box::new(generate_tree(depth - 1, rng)),
+                rhs: Box::new(generate_tree(depth - 1, rng)),
+            })),
+            NodeNonTerminal::Sqrt(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Sqrt(NodeUnop {
                 value: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            4 => NodeKind::Abs(NodeUnop {
+            })),
+            NodeNonTerminal::Abs(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Abs(NodeUnop {
                 value: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            5 => NodeKind::Sin(NodeUnop {
+            })),
+            NodeNonTerminal::Sin(_) => NodeKind::NodeNonTerminal(NodeNonTerminal::Sin(NodeUnop {
                 value: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            6 => NodeKind::Mod(NodeBinop {
-                lhs: Box::new(generate_tree(depth - 1, rng)),
-                rhs: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            7 => NodeKind::Gt(NodeBinop {
-                lhs: Box::new(generate_tree(depth - 1, rng)),
-                rhs: Box::new(generate_tree(depth - 1, rng)),
-            }),
-            _ => unreachable!(),
+            })),
         },
     }
 }
